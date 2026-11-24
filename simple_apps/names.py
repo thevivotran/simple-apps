@@ -9,6 +9,7 @@ APP_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 COLLECTION_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 RECORD_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 KV_KEY_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+QUERY_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
 RESERVED_APPS = frozenset({"system", "apps", "tmp", "health", "static"})
 
@@ -27,3 +28,7 @@ def is_record_id(name: str) -> bool:
 
 def is_kv_key(name: str) -> bool:
     return bool(KV_KEY_RE.fullmatch(name)) and name not in {".", ".."}
+
+
+def is_query_name(name: str) -> bool:
+    return bool(QUERY_RE.fullmatch(name))

@@ -56,6 +56,84 @@ members editing different items or fields at the same time never overwrite
 each other. There is no live push in v1: refresh with `list()` on page focus
 or on a timer (e.g. every 15–30 s) if several people use the app at once.
 
+## Relational data (optional)
+
+For data with relations, constraints or reporting (joins, sums, group-by), give
+the app its own SQLite tables instead of collections. Add a `db/` folder:
+
+```
+db/migrations/001_init.sql
+db/queries.sql
+```
+
+**Migrations** create and change tables. They run once each, in number order,
+when you deploy; if one fails the deploy fails and nothing changes.
+
+```sql
+-- db/migrations/001_init.sql
+CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE items (
+  id       INTEGER PRIMARY KEY,
+  store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  name     TEXT NOT NULL CHECK (length(name) > 0),
+  qty      INTEGER NOT NULL DEFAULT 1,
+  done     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX items_by_store ON items(store_id);
+```
+
+* **Never edit or delete a migration once deployed** — add `002_….sql` instead
+  (the deploy is refused otherwise).
+* Keep changes **additive** (new tables, `ALTER TABLE … ADD COLUMN`), so the
+  previous version still works after a rollback.
+* Allowed: tables, indexes, views, triggers, `INSERT/UPDATE/DELETE`. Not allowed:
+  `PRAGMA`, `ATTACH`, `BEGIN/COMMIT`, temp tables, virtual tables (FTS), and
+  writing the platform tables `records`, `kv`, `_migrations` (reading them is fine,
+  e.g. to copy collection data into a new table).
+
+**Queries** are the only SQL the page can run. Each starts with a `-- name:` line;
+add `(write)` if it changes data. Use named parameters (`:store`), never `?`.
+
+```sql
+-- db/queries.sql
+-- name: stores
+SELECT id, name FROM stores ORDER BY name;
+
+-- name: items_by_store
+SELECT i.id, i.name, i.qty, i.done, s.name AS store
+FROM items i JOIN stores s ON s.id = i.store_id
+WHERE s.id = :store ORDER BY i.done, i.name;
+
+-- name: add_item (write)
+INSERT INTO items (store_id, name, qty) VALUES (:store, :name, :qty) RETURNING *;
+
+-- name: toggle_item (write)
+UPDATE items SET done = NOT done WHERE id = :id RETURNING *;
+
+-- name: remove_items (write)
+DELETE FROM items WHERE id IN (SELECT value FROM json_each(:ids));
+```
+
+```js
+const { rows } = await simpleApps.sql('items_by_store', { store: 3 });
+const [item]   = (await simpleApps.sql('add_item', { store: 3, name: 'Milk', qty: 2 })).rows;
+await simpleApps.sql('remove_items', { ids: [4, 7] });  // arrays/objects arrive as JSON text
+```
+
+`simpleApps.sql()` resolves to `{ rows, changes, truncated }`: `rows` from the
+last statement that returns rows (use `RETURNING` on writes), at most 1000 —
+`truncated: true` means add a `LIMIT` / paging. Give joined columns distinct
+names (`s.name AS store`). A query may hold several statements; they run in one
+transaction. Every query is checked against the schema at deploy time, so typos
+fail the deploy, not the page.
+
+Errors: `409` for a broken constraint (`UNIQUE`, `CHECK`, `FOREIGN KEY`, or
+`SELECT RAISE(ABORT, 'message')` in a trigger — use these for validation and show
+`err.message`), `400` for a missing parameter, `404` unknown query, `503` query
+too slow (> 2 s) or database busy, `507` quota full.
+
+Collections, kv and tables can be mixed in one app.
+
 ## Deploy
 
 ```sh
