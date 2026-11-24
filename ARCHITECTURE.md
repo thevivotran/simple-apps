@@ -328,10 +328,16 @@ Failures reject with an `Error` carrying `.status`.
 
 ### 4.1 Request handling (all requests)
 
-1. The server accepts a connection only if one of `MAX_THREADS` slots is free;
-   otherwise the connection waits in the listen backlog.
-2. The socket gets a `REQUEST_TIMEOUT` timeout, so a slow or stalled client
-   cannot hold a thread forever.
+1. A connection gets one of `MAX_THREADS` slots. When all are busy it is
+   answered `503 Retry-After: 1` immediately — the accept loop never blocks.
+2. Two timeouts bound every connection:
+   * a socket timeout of `REQUEST_TIMEOUT` per read/write catches idle clients;
+   * a **hard deadline** (watchdog timer that shuts the socket down) of
+     `REQUEST_TIMEOUT` for the whole connection, so a client dripping one byte
+     at a time cannot hold a thread. Large transfers — an *authenticated*
+     deploy, an export, a big static file — extend it by size ÷ 256 KiB/s.
+   Per-client-IP limits would not help: every request arrives from the
+   Tailscale proxy's address.
 3. Bodies require `Content-Length` (chunked uploads are rejected with 411) and
    are refused with 413 *before reading* when over the route's limit.
 4. The router matches the path against an explicit route table (regexes);
