@@ -236,6 +236,33 @@ class ResourceLimitTest(TempDirMixin, unittest.TestCase):
             sock.close()
         self.assertIn("request deadline exceeded", "\n".join(logs.output))
 
+    def test_slow_steady_download_hits_overall_limit(self):
+        self.start(request_timeout=0.5)
+        body = make_zip({"index.html": "x", "big.bin": b"x" * (8 * 1024 * 1024)})
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("PUT", "/_api/v1/apps/big", body, {**AUTH, "Content-Type": "application/zip"})
+        self.assertEqual(conn.getresponse().status, 201)
+        conn.close()
+
+        # 8 MiB at >= 1 GiB/s minimum: the overall limit is ~0.5 s, while the per-chunk
+        # stall limit (10 s) alone would let a trickling reader hold the slot.
+        with mock.patch.object(server_module, "MIN_DOWNLOAD_BYTES_PER_SEC", 1024**3):
+            sock = socket.create_connection(("127.0.0.1", self.port))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            sock.sendall(b"GET /big/big.bin HTTP/1.0\r\n\r\n")
+            sock.settimeout(0.05)
+            freed = False
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not freed:
+                try:
+                    sock.recv(1024)  # keep trickling ~20 KiB/s
+                except TimeoutError:
+                    pass
+                time.sleep(0.05)
+                freed = self.server._slots._value == self.server.platform.config.max_threads
+            sock.close()
+        self.assertTrue(freed, "request slot still held by a slow reader")
+
     def test_busy_server_answers_503(self):
         self.start(max_threads=1, request_timeout=2.0)
         hog = socket.create_connection(("127.0.0.1", self.port))

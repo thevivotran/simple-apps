@@ -336,9 +336,9 @@ Failures reject with an `Error` carrying `.status`.
      `REQUEST_TIMEOUT` for the whole connection, so a client dripping one byte
      at a time cannot hold a thread. Only an *authenticated* deploy extends it
      (by upload size ÷ 256 KiB/s). Downloads (static files, exports) are
-     streamed in 64 KiB chunks and the deadline restarts at 10 s per chunk —
-     a minimum-rate rule, so a slow anonymous reader is cut off rather than
-     granted a size-based budget.
+     streamed in 64 KiB chunks under two limits: a 10 s stall limit per chunk
+     and an overall limit of `REQUEST_TIMEOUT` + size ÷ 64 KiB/s for the file,
+     so a reader that trickles just fast enough is still cut off.
    Per-client-IP limits would not help: every request arrives from the
    Tailscale proxy's address.
 3. Bodies require `Content-Length` (chunked uploads are rejected with 411) and
