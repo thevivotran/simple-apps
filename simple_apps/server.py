@@ -2,7 +2,7 @@
 (ARCHITECTURE.md §3.5, §4.1, §4.8).
 
 This is the only module that knows about HTTP; it validates the request shape,
-then delegates to Deployer / AppData / Registry.
+then delegates to Deployer / AppData / sqlstore / Registry.
 """
 
 import hmac
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import datastore, names
+from . import datastore, names, sqlstore
 from .config import Config
 from .deploy import Deployer
 from .errors import ApiError
@@ -406,6 +406,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.platform.data(m["app"]).kv_delete(m["key"])
         self.send_json(204, None)
 
+    def run_query(self, m: re.Match) -> None:
+        store = self.platform.data(m["app"])
+        current = self.platform.deployer.site_dir(m["app"]) / "current"
+        self.send_json(200, sqlstore.run_query(store, current, m["name"], self.read_json()))
+
     # -- static apps ---------------------------------------------------------
 
     def app_redirect(self, m: re.Match) -> None:
@@ -450,6 +455,7 @@ ROUTES: list[tuple[dict[str, Handler], re.Pattern]] = [
     ({"POST": H.rollback_app}, _r(r"/_api/v1/apps/(?P<app>[^/]+)/rollback")),
     ({"GET": H.export_app}, _r(r"/_api/v1/apps/(?P<app>[^/]+)/export")),
     ({"GET": H.kv_get, "PUT": H.kv_put, "DELETE": H.kv_delete}, _r(DATA + r"/_kv/(?P<key>[^/]+)")),
+    ({"POST": H.run_query}, _r(DATA + r"/_sql/(?P<name>[^/]+)")),
     ({"GET": H.list_records, "POST": H.create_record}, _r(DATA + r"/(?P<coll>[^/]+)/?")),
     (
         {"GET": H.get_record, "PUT": H.put_record, "PATCH": H.patch_record, "DELETE": H.delete_record},
