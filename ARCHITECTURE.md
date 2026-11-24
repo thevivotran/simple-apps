@@ -20,8 +20,8 @@ The document goes from the broadest view to the most concrete:
 Small apps (usually a single HTML/JS page written with Claude) currently need
 the full delivery pipeline: a new git repo, CI that builds a container image,
 new manifests in the `homelab` repo, then a Flux reconcile. That is the right
-amount of ceremony for multi-component apps, but far too much
-for a grocery list or a chore chart.
+amount of ceremony for multi-component apps, but far too much for a grocery
+list or a chore chart.
 
 ### 1.2 Goal
 
