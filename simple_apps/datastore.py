@@ -1,5 +1,5 @@
 """Per-app data in apps/<app>/data.db: collections of JSON records plus a kv table
-(ARCHITECTURE.md §3.3, §4.7).
+(ARCHITECTURE.md §3.3, §4.7). App-defined tables live in the same file (sqlstore.py).
 
 Callers pass an already-validated app name; this module validates everything
 else that comes from the request (collection, id, key, body shape).
@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS kv (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS _migrations (
+    name       TEXT PRIMARY KEY,
+    sha256     TEXT NOT NULL,
+    applied_at TEXT NOT NULL
 );
 """
 
@@ -94,7 +99,7 @@ class AppData:
             conn.close()
         return (pages - free) * size
 
-    def _check_quota(self) -> None:
+    def check_quota(self) -> None:
         if self.used_bytes() >= self.quota_bytes:
             raise ApiError(507, "app data quota exceeded")
 
@@ -140,7 +145,7 @@ class AppData:
     def create(self, collection: str, data: Any) -> dict:
         _check_collection(collection)
         _check_object(data)
-        self._check_quota()
+        self.check_quota()
         record_id = secrets.token_urlsafe(9)  # 12 chars
         now = utc_now()
         with transaction(self.path, immediate=True) as conn:
@@ -155,7 +160,7 @@ class AppData:
         _check_collection(collection)
         _check_id(record_id)
         _check_object(data)
-        self._check_quota()
+        self.check_quota()
         now = utc_now()
         with transaction(self.path, immediate=True) as conn:
             row = conn.execute(
@@ -183,7 +188,7 @@ class AppData:
         _check_collection(collection)
         _check_id(record_id)
         _check_object(patch)
-        self._check_quota()
+        self.check_quota()
         now = utc_now()
         with transaction(self.path, immediate=True) as conn:
             row = conn.execute(
@@ -226,7 +231,7 @@ class AppData:
 
     def kv_set(self, key: str, value: Any) -> dict:
         _check_key(key)
-        self._check_quota()
+        self.check_quota()
         now = utc_now()
         with transaction(self.path, immediate=True) as conn:
             conn.execute(

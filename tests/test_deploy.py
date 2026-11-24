@@ -194,7 +194,15 @@ class DeployTest(TempDirMixin, unittest.TestCase):
         path = self.deployer.export("app")
         with zipfile.ZipFile(path) as zf:
             self.assertEqual(
-                sorted(zf.namelist()), ["app.json", "data/kv.json", "data/records.json", "site/index.html"]
+                sorted(zf.namelist()),
+                [
+                    "app.json",
+                    "data/kv.json",
+                    "data/records.json",
+                    "data/schema.sql",
+                    "data/tables.json",
+                    "site/index.html",
+                ],
             )
             records = json.loads(zf.read("data/records.json"))
             self.assertEqual(records["items"][0]["data"], {"name": "Milk"})
