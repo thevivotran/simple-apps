@@ -181,6 +181,35 @@ class ServerTest(TempDirMixin, unittest.TestCase):
         # reads are never blocked
         self.assertEqual(self.request("GET", base, headers={"Origin": "https://evil.example"})[0], 200)
 
+    def test_sql_queries(self):
+        files = {
+            "index.html": "<p>hi</p>",
+            "db/migrations/001_init.sql": "CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL);",
+            "db/queries.sql": "-- name: add (write)\nINSERT INTO notes (text) VALUES (:text) RETURNING id;\n"
+            "-- name: all\nSELECT id, text FROM notes ORDER BY id",
+        }
+        status, body, _ = self.deploy(files=files)
+        self.assertEqual(status, 201, body)
+        base = "/_data/v1/grocery/_sql"
+        status, body, _ = self.request("POST", f"{base}/add", {"text": "hello"}, JSON)
+        self.assertEqual((status, body), (200, {"rows": [{"id": 1}], "changes": 1, "truncated": False}))
+        status, body, _ = self.request("POST", f"{base}/all", {}, JSON)
+        self.assertEqual(body["rows"], [{"id": 1, "text": "hello"}])
+        self.assertEqual(self.request("POST", f"{base}/add", {}, JSON)[0], 400)  # missing :text
+        self.assertEqual(self.request("POST", f"{base}/nope", {}, JSON)[0], 404)
+        self.assertEqual(self.request("GET", f"{base}/all")[0], 405)
+        self.assertEqual(self.request("POST", f"{base}/all", {}, {"Content-Type": "text/plain"})[0], 415)
+        self.assertEqual(
+            self.request("POST", f"{base}/all", {}, {**JSON, "Origin": "https://evil.example"})[0], 403
+        )
+        self.assertEqual(self.request("POST", "/_data/v1/nope/_sql/all", {}, JSON)[0], 404)
+        # a bad query is refused at deploy and the live version keeps serving
+        files["db/queries.sql"] = "-- name: all\nSELECT * FROM missing"
+        status, body, _ = self.deploy(files=files)
+        self.assertEqual(status, 400)
+        self.assertIn("no such table: missing", body["error"])
+        self.assertEqual(self.request("POST", f"{base}/all", {}, JSON)[0], 200)
+
 
 class ResourceLimitTest(TempDirMixin, unittest.TestCase):
     """Slow clients and connection floods must not exhaust the server (ARCHITECTURE.md §4.1)."""

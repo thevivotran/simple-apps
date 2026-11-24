@@ -1,5 +1,5 @@
-"""Bundle validation, extraction, atomic version switching, rollback, delete and export
-(ARCHITECTURE.md §4.2–§4.6).
+"""Bundle validation, extraction, migrations, atomic version switching, rollback, delete
+and export (ARCHITECTURE.md §4.2–§4.6).
 """
 
 import json
@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import stat
 import threading
 import zipfile
@@ -16,8 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
-from . import datastore
+from . import datastore, sqlstore
 from .config import Config
+from .db import connect
 from .errors import ApiError
 from .registry import AppInfo, Registry
 
@@ -26,6 +28,7 @@ log = logging.getLogger(__name__)
 CHUNK = 64 * 1024
 MANIFEST_MAX_BYTES = 64 * 1024
 VERSION_DIR_RE = re.compile(r"v(\d+)")
+SNAPSHOT_RE = re.compile(r"before-v(\d+)\.db")
 IGNORED_PARTS = {"__MACOSX"}
 IGNORED_FILES = {".DS_Store", "Thumbs.db"}
 
@@ -95,7 +98,8 @@ class Deployer:
                 members = self._inspect(zf)
                 manifest = self._manifest(zf, members, app)
                 total = self._extract(zf, members, staging)
-            return self._commit(app, staging, manifest, total, len(members))
+            db_bundle = sqlstore.read_bundle(staging)
+            return self._commit(app, staging, manifest, total, len(members), db_bundle)
         finally:
             zip_path.unlink(missing_ok=True)
             if staging.exists():
@@ -202,19 +206,33 @@ class Deployer:
         return total
 
     def _commit(
-        self, app: str, staging: Path, manifest: Manifest, size: int, files: int
+        self, app: str, staging: Path, manifest: Manifest, size: int, files: int, db_bundle: sqlstore.DbBundle
     ) -> tuple[AppInfo, bool]:
         with self._lock:
+            new_app = self.registry.get(app) is None
+            version = max([self.registry.max_version(app), *self._disk_versions(app)]) + 1
+            data = datastore.data_path(self.config.apps_dir, app)
+            try:
+                # Migrate before switching: if it fails the live version and schema are untouched.
+                datastore.init_app_data(self.config.apps_dir, app)
+                pending = sqlstore.pending_migrations(data, db_bundle)
+                if pending and not new_app:
+                    self._snapshot(app, version)
+                sqlstore.migrate(data, db_bundle, pending)
+            except BaseException:
+                if new_app:
+                    shutil.rmtree(self.config.apps_dir / app, ignore_errors=True)
+                raise
             site = self.site_dir(app)
             site.mkdir(parents=True, exist_ok=True)
-            version = max([self.registry.max_version(app), *self._disk_versions(app)]) + 1
             staging.rename(site / f"v{version}")
             self._point_current(app, version)
             created = self.registry.record_deploy(
                 app, manifest.title, manifest.quota_mb, manifest.spa, version, size, files
             )
-            datastore.init_app_data(self.config.apps_dir, app)
             self._prune(app, version)
+            if pending:
+                log.info("migrated %s: %s", app, ", ".join(m.name for m in pending))
             info = self.registry.get(app)
             assert info is not None
             log.info("deployed %s v%d (%d files, %d bytes)", app, version, files, size)
@@ -228,6 +246,21 @@ class Deployer:
         os.symlink(f"v{version}", tmp_link)
         os.replace(tmp_link, site / "current")
 
+    def snapshot_dir(self, app: str) -> Path:
+        return self.config.apps_dir / app / "snapshots"
+
+    def _snapshot(self, app: str, version: int) -> None:
+        """Copy data.db (online backup API) before migrating it for v<version>."""
+        dest_dir = self.snapshot_dir(app)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        src = connect(datastore.data_path(self.config.apps_dir, app))
+        dest = sqlite3.connect(dest_dir / f"before-v{version}.db")
+        try:
+            src.backup(dest)
+        finally:
+            dest.close()
+            src.close()
+
     def _prune(self, app: str, current: int) -> None:
         keep_n = self.config.keep_versions
         known = [d.version for d in self.registry.deployments(app)]  # newest first
@@ -236,6 +269,12 @@ class Deployer:
         for v in self._disk_versions(app):
             if v not in keep:
                 shutil.rmtree(self.site_dir(app) / f"v{v}", ignore_errors=True)
+        snapshots = self.snapshot_dir(app)
+        if snapshots.is_dir():
+            for path in snapshots.iterdir():
+                m = SNAPSHOT_RE.fullmatch(path.name)
+                if m and int(m.group(1)) not in keep:
+                    path.unlink(missing_ok=True)
 
     # -- rollback / delete -------------------------------------------------
 
@@ -300,6 +339,7 @@ class Deployer:
             raise ApiError(404, "app not found")
         store = datastore.AppData(datastore.data_path(self.config.apps_dir, app), info.quota_mb)
         records, kv = store.export()
+        schema, tables = sqlstore.export_tables(store.path)
         meta = info.to_dict() | {"deployments": [d.to_dict() for d in self.registry.deployments(app)]}
         out = self._tmp_path(".zip")
         root = (self.site_dir(app) / "current").resolve()
@@ -309,5 +349,7 @@ class Deployer:
                     zf.write(path, f"site/{path.relative_to(root).as_posix()}")
             zf.writestr("data/records.json", json.dumps(records, ensure_ascii=False, indent=2))
             zf.writestr("data/kv.json", json.dumps(kv, ensure_ascii=False, indent=2))
+            zf.writestr("data/schema.sql", schema)
+            zf.writestr("data/tables.json", json.dumps(tables, ensure_ascii=False, indent=2))
             zf.writestr("app.json", json.dumps(meta, ensure_ascii=False, indent=2))
         return out

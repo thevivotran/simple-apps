@@ -9,6 +9,7 @@
  *   await items.list({ order: '-created_at' });  // -> [record]
  *   await items.update(id, { done: true });      // merge fields (null removes a field)
  *   await simpleApps.kv.set('settings', {...});
+ *   await simpleApps.sql('items_by_store', { store: 3 }); // -> {rows, changes, truncated}
  */
 (function () {
   'use strict';
@@ -89,5 +90,10 @@
     }
   };
 
-  window.simpleApps = Object.freeze({ version: 'v1', app: app, collection: collection, kv: kv });
+  // Run a named query declared in the bundle's db/queries.sql (never raw SQL).
+  function sql(name, params) {
+    return request('POST', '/_sql/' + enc(name), params || {});
+  }
+
+  window.simpleApps = Object.freeze({ version: 'v1', app: app, collection: collection, kv: kv, sql: sql });
 })();
