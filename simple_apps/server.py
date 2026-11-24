@@ -14,6 +14,7 @@ import re
 import socket
 import sys
 import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -32,9 +33,11 @@ log = logging.getLogger(__name__)
 STATIC = resources.files("simple_apps") / "static"
 SAFE_METHODS = {"GET", "HEAD"}
 # An authenticated deploy gets extra time on top of REQUEST_TIMEOUT for its upload,
-# assuming at least this rate. Downloads never get a size-based budget: they are
-# streamed in chunks and each chunk must be sent within STREAM_CHUNK_SECONDS.
+# assuming at least this rate. Downloads are streamed in chunks: each chunk must be
+# sent within STREAM_CHUNK_SECONDS (stall limit) and the whole file within
+# REQUEST_TIMEOUT + size / MIN_DOWNLOAD_BYTES_PER_SEC (overall limit).
 MIN_UPLOAD_BYTES_PER_SEC = 256 * 1024
+MIN_DOWNLOAD_BYTES_PER_SEC = 64 * 1024
 STREAM_CHUNK = 64 * 1024
 STREAM_CHUNK_SECONDS = 10.0
 BUSY_RESPONSE = (
@@ -268,10 +271,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def send_file(self, status: int, path: Path, content_type: str, extra: dict) -> None:
-        """Stream a file; every chunk must go out within STREAM_CHUNK_SECONDS, which
-        enforces a minimum download rate instead of one large up-front time budget."""
+        """Stream a file under a stall limit per chunk and an overall limit for the file."""
         with open(path, "rb") as f:
             size = os.fstat(f.fileno()).st_size
+            overall = time.monotonic() + self.timeout + size / MIN_DOWNLOAD_BYTES_PER_SEC
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(size))
@@ -282,7 +285,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             if self.command == "HEAD":
                 return
             while chunk := f.read(STREAM_CHUNK):
-                self._arm(STREAM_CHUNK_SECONDS)
+                remaining = overall - time.monotonic()
+                if remaining <= 0:
+                    self._expire()
+                    return
+                self._arm(min(STREAM_CHUNK_SECONDS, remaining))
                 self.wfile.write(chunk)
 
     # -- platform routes -----------------------------------------------------
