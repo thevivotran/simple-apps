@@ -334,8 +334,11 @@ Failures reject with an `Error` carrying `.status`.
    * a socket timeout of `REQUEST_TIMEOUT` per read/write catches idle clients;
    * a **hard deadline** (watchdog timer that shuts the socket down) of
      `REQUEST_TIMEOUT` for the whole connection, so a client dripping one byte
-     at a time cannot hold a thread. Large transfers — an *authenticated*
-     deploy, an export, a big static file — extend it by size ÷ 256 KiB/s.
+     at a time cannot hold a thread. Only an *authenticated* deploy extends it
+     (by upload size ÷ 256 KiB/s). Downloads (static files, exports) are
+     streamed in 64 KiB chunks and the deadline restarts at 10 s per chunk —
+     a minimum-rate rule, so a slow anonymous reader is cut off rather than
+     granted a size-based budget.
    Per-client-IP limits would not help: every request arrives from the
    Tailscale proxy's address.
 3. Bodies require `Content-Length` (chunked uploads are rejected with 411) and
@@ -403,7 +406,8 @@ Admin only. Streams a zip containing `site/…` (current version),
 3. The resolved real path must stay inside `site/current/` → otherwise 404.
 4. Missing file → 404, or `index.html` when the app is in SPA mode and the
    path has no file extension.
-5. `Content-Type` from `mimetypes`; `Cache-Control: no-cache` plus an `ETag`
+5. Streamed in 64 KiB chunks (§4.1). `Content-Type` from `mimetypes`;
+   `Cache-Control: no-cache` plus an `ETag`
    (version + mtime + size) so redeploys show up immediately and unchanged
    files revalidate with 304.
 

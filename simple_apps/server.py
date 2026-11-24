@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import re
 import socket
 import sys
@@ -16,6 +17,7 @@ import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -29,9 +31,12 @@ log = logging.getLogger(__name__)
 
 STATIC = resources.files("simple_apps") / "static"
 SAFE_METHODS = {"GET", "HEAD"}
-# Large transfers (deploys, exports, big static files) get extra time on top of
-# REQUEST_TIMEOUT, assuming the client manages at least this rate.
-MIN_TRANSFER_BYTES_PER_SEC = 256 * 1024
+# An authenticated deploy gets extra time on top of REQUEST_TIMEOUT for its upload,
+# assuming at least this rate. Downloads never get a size-based budget: they are
+# streamed in chunks and each chunk must be sent within STREAM_CHUNK_SECONDS.
+MIN_UPLOAD_BYTES_PER_SEC = 256 * 1024
+STREAM_CHUNK = 64 * 1024
+STREAM_CHUNK_SECONDS = 10.0
 BUSY_RESPONSE = (
     b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json\r\n"
     b"Retry-After: 1\r\nContent-Length: 26\r\n\r\n"
@@ -116,7 +121,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # for the whole connection, so a client dripping bytes cannot hold a thread.
         self.timeout = self.server.platform.config.request_timeout
         self._watchdog: threading.Timer | None = None
-        self.extend_deadline(0)
+        self._arm(self.timeout)
         super().setup()
 
     def finish(self) -> None:
@@ -126,11 +131,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             if self._watchdog is not None:
                 self._watchdog.cancel()
 
-    def extend_deadline(self, transfer_bytes: int) -> None:
-        """(Re)start the hard deadline: REQUEST_TIMEOUT plus time for `transfer_bytes`."""
+    def _arm(self, seconds: float) -> None:
+        """(Re)start the hard deadline: the socket is shut down after `seconds`."""
         if self._watchdog is not None:
             self._watchdog.cancel()
-        seconds = self.server.platform.config.request_timeout + transfer_bytes / MIN_TRANSFER_BYTES_PER_SEC
         self._watchdog = threading.Timer(seconds, self._expire)
         self._watchdog.daemon = True
         self._watchdog.start()
@@ -263,6 +267,24 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
 
+    def send_file(self, status: int, path: Path, content_type: str, extra: dict) -> None:
+        """Stream a file; every chunk must go out within STREAM_CHUNK_SECONDS, which
+        enforces a minimum download rate instead of one large up-front time budget."""
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self._common_headers()
+            for key, value in extra.items():
+                self.send_header(key, value)
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            while chunk := f.read(STREAM_CHUNK):
+                self._arm(STREAM_CHUNK_SECONDS)
+                self.wfile.write(chunk)
+
     # -- platform routes -----------------------------------------------------
 
     def health(self, _m: re.Match) -> None:
@@ -295,7 +317,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not names.is_app_name(app):
             raise ApiError(400, "invalid app name: use lowercase letters, digits and '-', max 40 chars")
         length = self.content_length(self.platform.config.max_bundle_bytes)
-        self.extend_deadline(length)  # only after auth: anonymous clients never get extra time
+        # Only after auth: anonymous clients never get a size-based time budget.
+        self._arm(self.timeout + length / MIN_UPLOAD_BYTES_PER_SEC)
         info, created = self.platform.deployer.deploy(app, self.rfile, length)
         self.send_json(201 if created else 200, self._app_details(info))
 
@@ -315,19 +338,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         app = self.platform.app_or_404(m["app"]).name
         path = self.platform.deployer.export(app)
         try:
-            size = path.stat().st_size
-            self.extend_deadline(size)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", f'attachment; filename="{app}-export.zip"')
-            self.send_header("Cache-Control", "no-store")
-            self._common_headers()
-            self.end_headers()
-            if self.command != "HEAD":
-                with open(path, "rb") as f:
-                    while chunk := f.read(64 * 1024):
-                        self.wfile.write(chunk)
+            headers = {
+                "Content-Disposition": f'attachment; filename="{app}-export.zip"',
+                "Cache-Control": "no-store",
+            }
+            self.send_file(200, path, "application/zip", headers)
         finally:
             path.unlink(missing_ok=True)
 
@@ -403,11 +418,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         if etag in (self.headers.get("If-None-Match") or ""):
             self.send_empty(304, headers)
             return
-        self.extend_deadline(st.st_size)
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"
-        self.send_body(200, path.read_bytes(), ctype, headers)
+        self.send_file(200, path, ctype, headers)
 
 
 def _r(pattern: str) -> re.Pattern:
