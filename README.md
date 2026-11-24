@@ -34,6 +34,18 @@ curl -fsS -X PUT --data-binary @app.zip \
 Other admin calls: `POST …/apps/<name>/rollback`, `DELETE …/apps/<name>`,
 `GET …/apps/<name>/export`.
 
+## Claude skill for writing apps
+
+`skill/simple-apps-app/` teaches Claude to build, check and deploy apps for the
+platform — in Claude Code (tests on a local platform, deploys with the token) and in
+claude.ai chat (builds a checked zip to upload on the portal).
+
+```sh
+make skill      # install to ~/.claude/skills and build dist/simple-apps-app.zip
+```
+
+For chat, upload `dist/simple-apps-app.zip` in claude.ai → Settings → Capabilities → Skills.
+
 ## Delivery
 
 Every push to `main` (and a weekly scheduled run, to pick up base-image security
