@@ -386,6 +386,32 @@ authorizer (`Connection.set_authorizer`, stdlib):
 app may call anyway. Read queries additionally run with `PRAGMA query_only`. Request-time queries are
 aborted after 2 s (progress handler) and return at most 1000 rows.
 
+### 3.11 Repository layout
+
+```
+simple_apps/                 the platform (§3.1) — the only code in the image
+tests/                       unittest suites, one per module, plus test_skill.py
+skill/simple-apps-app/       local only (git-ignored): Claude skill for building apps
+  SKILL.md                   workflow: name → build → check → deploy (Code) or hand over a zip (chat)
+  references/                copies of APP_AUTHORING.md and ARCHITECTURE.md
+  scripts/check_bundle.py    stdlib pre-flight check + zip builder
+ARCHITECTURE.md              this document
+APP_AUTHORING.md             the contract for app code (SDK, manifest, db/ folder)
+Dockerfile, Makefile         image build; `make all` = ruff + tests
+.github/workflows/ci.yaml    tests on every push/PR; image build on main + weekly
+```
+
+The skill names one deployment (its host, token source and checkout path), so
+it stays out of the public repository, as does the local `CLAUDE.md`. Where it
+exists it mirrors the platform and is kept in step mechanically:
+`make skill` refreshes `references/` from the two docs (then installs the skill
+to `~/.claude/skills/` and builds `dist/simple-apps-app.zip` for claude.ai chat),
+and `tests/test_skill.py` fails while the copies are stale, or when a bundle
+that `check_bundle.py` passes no longer deploys on the real platform (§4.2).
+Without the folder (CI, fresh clones) that test module is skipped.
+`check_bundle.py` stays stdlib-only because it runs in the chat sandbox, which
+cannot reach the tailnet. The image copies only `simple_apps/`.
+
 ---
 
 ## 4. Functional design
@@ -538,6 +564,11 @@ curl -fsS -X PUT --data-binary @grocery.zip \
   https://simple-apps.<tailnet>.ts.net/_api/v1/apps/grocery
 ```
 
+Claude Code does this through the `simple-apps-app` skill (§3.11), which checks
+the bundle with `check_bundle.py` first. In claude.ai chat, which is off the
+tailnet, the skill only produces the checked zip and the admin uploads it on
+the portal (§4.9).
+
 ### 4.11 Failure behaviour
 
 | Situation                         | Behaviour |
@@ -547,7 +578,7 @@ curl -fsS -X PUT --data-binary @grocery.zip \
 | Migration or query invalid        | 400 at deploy; the migration transaction rolls back, the live version keeps serving |
 | Two members write at once         | SQLite serialises writes (busy timeout 5 s); per-record writes don't clobber each other |
 | Disk / quota full                 | 507 to the writer; reads keep working |
-| `thevix` offline                  | No effect — runs on `carange` |
+| Admin workstation offline         | No effect — the platform runs on its own node |
 | PVC lost                          | Restore from restic (§3.9); redeploying manifests alone gives an empty platform |
 
 ### 4.12 Backup and restore

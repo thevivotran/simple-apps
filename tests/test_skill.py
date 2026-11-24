@@ -13,6 +13,10 @@ from .helpers import TempDirMixin
 ROOT = Path(__file__).resolve().parent.parent
 SKILL = ROOT / "skill" / "simple-apps-app"
 
+# The skill is personal tooling kept out of the public repo (.gitignore); CI has no copy.
+if not SKILL.is_dir():
+    raise unittest.SkipTest("skill/simple-apps-app not present")
+
 spec = importlib.util.spec_from_file_location("check_bundle", SKILL / "scripts" / "check_bundle.py")
 assert spec and spec.loader
 check_bundle = importlib.util.module_from_spec(spec)
