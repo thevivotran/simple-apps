@@ -20,8 +20,8 @@ The document goes from the broadest view to the most concrete:
 Small apps (usually a single HTML/JS page written with Claude) currently need
 the full delivery pipeline: a new git repo, CI that builds a container image,
 new manifests in the `homelab` repo, then a Flux reconcile. That is the right
-amount of ceremony for multi-component apps such as Carange, but far too much
-for a grocery list or a chore chart.
+amount of ceremony for multi-component apps, but far too much for a grocery
+list or a chore chart.
 
 ### 1.2 Goal
 
@@ -64,11 +64,11 @@ from schema-free JSON collections up to its own relational tables.
                       ▼  HTTP :8080
             ┌─────────────────────┐        ┌──────────────────────┐
             │ simple-apps pod     │◄──────►│ PVC simple-apps-data │
-            │ (k3s, node carange) │        │ (local-path, NUC SSD)│
+            │ (k3s, single node)  │        │ (local-path, on node)│
             └─────────────────────┘        └──────────┬───────────┘
-                                                      │ nightly 05:00
+                                                      │ nightly
                                            ┌──────────▼───────────┐
-                                           │ restic → external HDD│
+                                           │ restic → backup disk │
                                            └──────────────────────┘
 ```
 
@@ -340,12 +340,12 @@ Failures reject with an `Error` carrying `.status`.
 | Resource | Detail |
 |---|---|
 | Namespace | `simple-apps` (PSA baseline enforce / restricted warn) |
-| Workload | app-template HelmRelease, 1 replica, `Recreate`, pinned to `carange`, uid 1000, read-only root FS, all capabilities dropped |
+| Workload | app-template HelmRelease, 1 replica, `Recreate`, pinned to one node, uid 1000, read-only root FS, all capabilities dropped |
 | Storage | PVC `simple-apps-data`, 5 Gi, `local-path` |
-| Exposure | Tailscale ingress host `simple-apps`, proxy-class `carange-only` |
+| Exposure | Tailscale ingress host `simple-apps`, through a proxy class pinned to the same node |
 | Secret | `simple-apps-secrets` (SOPS) → `ADMIN_TOKEN` |
 | Image | `ghcr.io/thevivotran/simple-apps:main-<ts>-<sha>`, built by GitHub Actions on every push **and weekly** (so base-image security patches ship without code changes), kept current by Flux image automation |
-| Backup | CronJob 05:00: init container snapshots every SQLite file with the online-backup API, then restic backs up sites + snapshots to the external HDD (7 daily + 4 weekly) |
+| Backup | Nightly CronJob: init container snapshots every SQLite file with the online-backup API, then restic backs up sites + snapshots to an off-node backup disk (7 daily + 4 weekly) |
 
 ### 3.10 App-declared SQL (relational apps)
 
@@ -583,7 +583,7 @@ the portal (§4.9).
 
 ### 4.12 Backup and restore
 
-* **Backup (05:00):** an init container (uid 1000, so SQLite side files keep
+* **Backup (nightly):** an init container (uid 1000, so SQLite side files keep
   the right owner) copies `system.db` and every `data.db` with SQLite's online
   backup API into an `emptyDir` at `/dump`. restic then backs up `/data`
   (excluding `*.db*` and `tmp/`) plus `/dump`.
