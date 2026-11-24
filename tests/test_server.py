@@ -4,7 +4,9 @@ import socket
 import threading
 import time
 import unittest
+from unittest import mock
 
+from simple_apps import server as server_module
 from simple_apps.server import make_server
 
 from .helpers import TOKEN, TempDirMixin, make_config, make_zip
@@ -213,6 +215,26 @@ class ResourceLimitTest(TempDirMixin, unittest.TestCase):
         sock.close()
         self.assertLess(time.monotonic() - started, 4)
         self.assertNotIn(b"200", response)
+
+    def test_stalled_download_is_cut_off(self):
+        self.start(request_timeout=5.0)
+        big = b"x" * (8 * 1024 * 1024)
+        body = make_zip({"index.html": "x", "big.bin": big})
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("PUT", "/_api/v1/apps/big", body, {**AUTH, "Content-Type": "application/zip"})
+        self.assertEqual(conn.getresponse().status, 201)
+        conn.close()
+
+        with (
+            mock.patch.object(server_module, "STREAM_CHUNK_SECONDS", 0.5),
+            self.assertLogs("simple_apps.server", "WARNING") as logs,
+        ):
+            sock = socket.create_connection(("127.0.0.1", self.port))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            sock.sendall(b"GET /big/big.bin HTTP/1.0\r\n\r\n")
+            time.sleep(1.5)  # never read: the server's sends stall and the chunk deadline fires
+            sock.close()
+        self.assertIn("request deadline exceeded", "\n".join(logs.output))
 
     def test_busy_server_answers_503(self):
         self.start(max_threads=1, request_timeout=2.0)
