@@ -10,6 +10,8 @@ import json
 import logging
 import mimetypes
 import re
+import socket
+import sys
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +29,14 @@ log = logging.getLogger(__name__)
 
 STATIC = resources.files("simple_apps") / "static"
 SAFE_METHODS = {"GET", "HEAD"}
+# Large transfers (deploys, exports, big static files) get extra time on top of
+# REQUEST_TIMEOUT, assuming the client manages at least this rate.
+MIN_TRANSFER_BYTES_PER_SEC = 256 * 1024
+BUSY_RESPONSE = (
+    b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+    b"Retry-After: 1\r\nContent-Length: 26\r\n\r\n"
+    b'{"error": "server busy"}\r\n'
+)
 
 Handler = Callable[["RequestHandler", re.Match], None]
 
@@ -63,8 +73,14 @@ class Server(ThreadingHTTPServer):
         super().__init__(address, RequestHandler)
 
     def process_request(self, request, client_address):  # type: ignore[override]
-        # Block the accept loop while all slots are busy; extra clients wait in the backlog.
-        self._slots.acquire()
+        # Never block the accept loop: when every slot is busy, refuse at once.
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.sendall(BUSY_RESPONSE)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
         try:
             super().process_request(request, client_address)
         except BaseException:
@@ -76,6 +92,13 @@ class Server(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._slots.release()
+
+    def handle_error(self, request, client_address):  # type: ignore[override]
+        exc = sys.exception()
+        if isinstance(exc, OSError):  # client went away or the watchdog closed the socket
+            log.debug("connection from %s dropped: %s", client_address[0], exc)
+        else:
+            log.exception("unhandled error for %s", client_address[0])
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -89,8 +112,35 @@ class RequestHandler(BaseHTTPRequestHandler):
         return self.server_version
 
     def setup(self) -> None:
+        # Per-recv timeout catches idle clients; the watchdog enforces a hard deadline
+        # for the whole connection, so a client dripping bytes cannot hold a thread.
         self.timeout = self.server.platform.config.request_timeout
+        self._watchdog: threading.Timer | None = None
+        self.extend_deadline(0)
         super().setup()
+
+    def finish(self) -> None:
+        try:
+            super().finish()
+        finally:
+            if self._watchdog is not None:
+                self._watchdog.cancel()
+
+    def extend_deadline(self, transfer_bytes: int) -> None:
+        """(Re)start the hard deadline: REQUEST_TIMEOUT plus time for `transfer_bytes`."""
+        if self._watchdog is not None:
+            self._watchdog.cancel()
+        seconds = self.server.platform.config.request_timeout + transfer_bytes / MIN_TRANSFER_BYTES_PER_SEC
+        self._watchdog = threading.Timer(seconds, self._expire)
+        self._watchdog.daemon = True
+        self._watchdog.start()
+
+    def _expire(self) -> None:
+        log.warning("closing %s: request deadline exceeded", self.client_address[0])
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     @property
     def platform(self) -> Platform:
@@ -245,6 +295,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not names.is_app_name(app):
             raise ApiError(400, "invalid app name: use lowercase letters, digits and '-', max 40 chars")
         length = self.content_length(self.platform.config.max_bundle_bytes)
+        self.extend_deadline(length)  # only after auth: anonymous clients never get extra time
         info, created = self.platform.deployer.deploy(app, self.rfile, length)
         self.send_json(201 if created else 200, self._app_details(info))
 
@@ -265,6 +316,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = self.platform.deployer.export(app)
         try:
             size = path.stat().st_size
+            self.extend_deadline(size)
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Length", str(size))
@@ -351,6 +403,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if etag in (self.headers.get("If-None-Match") or ""):
             self.send_empty(304, headers)
             return
+        self.extend_deadline(st.st_size)
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"

@@ -1,6 +1,8 @@
 import http.client
 import json
+import socket
 import threading
+import time
 import unittest
 
 from simple_apps.server import make_server
@@ -176,6 +178,52 @@ class ServerTest(TempDirMixin, unittest.TestCase):
         self.assertEqual(self.request("POST", base, {}, proxied)[0], 201)
         # reads are never blocked
         self.assertEqual(self.request("GET", base, headers={"Origin": "https://evil.example"})[0], 200)
+
+
+class ResourceLimitTest(TempDirMixin, unittest.TestCase):
+    """Slow clients and connection floods must not exhaust the server (ARCHITECTURE.md §4.1)."""
+
+    def start(self, **overrides):
+        self.server = make_server(make_config(self.tmp, **overrides), host="127.0.0.1")
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        super().tearDown()
+
+    def test_dripping_client_is_cut_off(self):
+        self.start(request_timeout=1.0)
+        sock = socket.create_connection(("127.0.0.1", self.port))
+        sock.settimeout(0.4)  # each recv() doubles as a 0.4 s pause between bytes
+        started = time.monotonic()
+        response = b""
+        try:
+            # ~12 s if never cut off; every gap is shorter than the 1 s socket timeout
+            for ch in b"GET /health HTTP/1.0\r\nX-Slow: " + b"a" * 30:
+                sock.send(bytes([ch]))
+                try:
+                    response = sock.recv(1024)  # b"" once the server closes the socket
+                    break
+                except TimeoutError:
+                    continue
+        except OSError:
+            pass
+        sock.close()
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertNotIn(b"200", response)
+
+    def test_busy_server_answers_503(self):
+        self.start(max_threads=1, request_timeout=2.0)
+        hog = socket.create_connection(("127.0.0.1", self.port))
+        hog.send(b"GET /health HTTP/1.0\r\n")  # incomplete: holds the only slot
+        time.sleep(0.2)
+        status = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        status.request("GET", "/health")
+        self.assertEqual(status.getresponse().status, 503)
+        status.close()
+        hog.close()
 
 
 if __name__ == "__main__":
