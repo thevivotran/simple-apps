@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Apps</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #e3e3de; --accent: #2f6f5e; --accent-text: #ffffff; --danger: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --card: #1f1f1d; --text: #ececea; --muted: #9a9a94;
+      --line: #33332f; --accent: #5fb39b; --accent-text: #0d1f1a; --danger: #f2948d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 16px; margin-bottom: 16px; }
+  .app { display: flex; gap: 12px; align-items: center; justify-content: space-between;
+         padding: 12px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .app:first-of-type { border-top: 0; }
+  .app a.title { font-weight: 600; color: var(--text); text-decoration: none; font-size: 1.05rem; }
+  .app a.title:hover { text-decoration: underline; }
+  .meta { color: var(--muted); font-size: .85rem; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  button, .btn { font: inherit; font-size: .85rem; padding: 6px 12px; border-radius: 8px;
+                 border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], input[type=file] {
+    width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+  .status { font-size: .9rem; }
+  .status.err { color: var(--danger); }
+  .empty { color: var(--muted); }
+  details summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Simple Apps</h1>
+  <p class="sub">Small family apps. Tap one to open it.</p>
+
+  <section class="card">
+    <h2>Apps</h2>
+    <div id="apps"><p class="empty">Loading…</p></div>
+  </section>
+
+  <section class="card">
+    <h2>Deploy an app</h2>
+    <form id="deploy">
+      <label for="name">App name (lowercase letters, digits, dashes)</label>
+      <input id="name" type="text" required pattern="[a-z0-9][a-z0-9\-]{0,39}" placeholder="grocery" autocomplete="off">
+      <label for="file">Zip file (must contain index.html)</label>
+      <input id="file" type="file" accept=".zip,application/zip" required>
+      <div class="row">
+        <button class="primary" type="submit">Deploy</button>
+        <span id="deploy-status" class="status"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <details id="token-box">
+      <summary>Admin token</summary>
+      <label for="token">Needed to deploy, roll back, export or delete. Saved in this browser only.</label>
+      <input id="token" type="password" autocomplete="off">
+    </details>
+  </section>
+</main>
+<script>
+(function () {
+  'use strict';
+  var TOKEN_KEY = 'simple-apps-admin-token';
+  var tokenInput = document.getElementById('token');
+  var appsBox = document.getElementById('apps');
+
+  try { tokenInput.value = localStorage.getItem(TOKEN_KEY) || ''; } catch (e) {}
+  if (!tokenInput.value) document.getElementById('token-box').open = true;
+  tokenInput.addEventListener('change', function () {
+    try { localStorage.setItem(TOKEN_KEY, tokenInput.value); } catch (e) {}
+  });
+
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function admin(method, url, body, contentType) {
+    var headers = { Authorization: 'Bearer ' + tokenInput.value.trim() };
+    if (contentType) headers['Content-Type'] = contentType;
+    return fetch(url, { method: method, headers: headers, body: body }).then(function (res) {
+      if (res.ok) return res;
+      return res.json().catch(function () { return {}; }).then(function (p) {
+        throw new Error(p.error || res.statusText);
+      });
+    });
+  }
+
+  function when(iso) {
+    try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+  }
+
+  function render(apps) {
+    appsBox.replaceChildren();
+    if (!apps.length) {
+      appsBox.appendChild(el('p', { class: 'empty' }, 'No apps yet. Deploy one below.'));
+      return;
+    }
+    apps.forEach(function (app) {
+      var row = el('div', { class: 'app' });
+      var info = el('div');
+      info.appendChild(el('a', { class: 'title', href: app.url }, app.title));
+      info.appendChild(el('div', { class: 'meta' },
+        '/' + app.name + '/  ·  v' + app.current_version + '  ·  updated ' + when(app.updated_at)));
+      row.appendChild(info);
+
+      var actions = el('div', { class: 'actions' });
+      var rollback = el('button', { type: 'button' }, 'Roll back');
+      rollback.addEventListener('click', function () {
+        if (!confirm('Roll ' + app.name + ' back to the previous version?')) return;
+        admin('POST', '/_api/v1/apps/' + app.name + '/rollback').then(load).catch(alertErr);
+      });
+      var exp = el('button', { type: 'button' }, 'Export');
+      exp.addEventListener('click', function () {
+        admin('GET', '/_api/v1/apps/' + app.name + '/export').then(function (res) { return res.blob(); })
+          .then(function (blob) {
+            var a = el('a', { href: URL.createObjectURL(blob), download: app.name + '-export.zip' });
+            document.body.appendChild(a); a.click(); a.remove();
+          }).catch(alertErr);
+      });
+      var del = el('button', { type: 'button', class: 'danger' }, 'Delete');
+      del.addEventListener('click', function () {
+        var typed = prompt('This deletes the app AND all its data. Type "' + app.name + '" to confirm:');
+        if (typed !== app.name) return;
+        admin('DELETE', '/_api/v1/apps/' + app.name).then(load).catch(alertErr);
+      });
+      actions.append(rollback, exp, del);
+      row.appendChild(actions);
+      appsBox.appendChild(row);
+    });
+  }
+
+  function alertErr(err) { alert(err.message); }
+
+  function load() {
+    return fetch('/_api/v1/apps').then(function (r) { return r.json(); })
+      .then(function (p) { render(p.apps); })
+      .catch(function () {
+        appsBox.replaceChildren(el('p', { class: 'empty' }, 'Could not load apps.'));
+      });
+  }
+
+  document.getElementById('deploy').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var name = document.getElementById('name').value.trim();
+    var file = document.getElementById('file').files[0];
+    var status = document.getElementById('deploy-status');
+    var button = ev.target.querySelector('button');
+    if (!file) return;
+    button.disabled = true;
+    status.className = 'status';
+    status.textContent = 'Uploading…';
+    admin('PUT', '/_api/v1/apps/' + encodeURIComponent(name), file, 'application/zip')
+      .then(function (res) { return res.json(); })
+      .then(function (app) {
+        status.textContent = 'Deployed ' + app.name + ' v' + app.current_version + '.';
+        ev.target.reset();
+        return load();
+      })
+      .catch(function (err) {
+        status.className = 'status err';
+        status.textContent = err.message;
+      })
+      .finally(function () { button.disabled = false; });
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>
