@@ -1,7 +1,41 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+build/
 .venv/
-data/
-*.zip
+venv/
 .ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime data (make run) and build outputs
+data/
 dist/
+*.zip
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets and local config — never public
+.env
+.env.*
+*.sops.*
+*.pem
+*.key
+.claude/
+CLAUDE.local.md
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Personal Claude tooling: kept locally, not published (holds host names and paths)
+CLAUDE.md
+skill/

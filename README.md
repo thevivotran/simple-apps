@@ -36,9 +36,10 @@ Other admin calls: `POST …/apps/<name>/rollback`, `DELETE …/apps/<name>`,
 
 ## Claude skill for writing apps
 
-`skill/simple-apps-app/` teaches Claude to build, check and deploy apps for the
-platform — in Claude Code (tests on a local platform, deploys with the token) and in
-claude.ai chat (builds a checked zip to upload on the portal).
+An optional Claude skill can build, check and deploy apps for the platform — in
+Claude Code (tests on a local platform, deploys with the token) and in claude.ai chat
+(builds a checked zip to upload on the portal). It names a specific deployment, so it
+is kept locally in `skill/simple-apps-app/` and is not part of this repository.
 
 ```sh
 make skill      # install to ~/.claude/skills and build dist/simple-apps-app.zip
