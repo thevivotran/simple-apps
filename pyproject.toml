@@ -1,0 +1,17 @@
+[project]
+name = "simple-apps"
+version = "1.0.0"
+description = "A tiny host for small static family apps with per-app JSON storage"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101", "S104", "S608"]  # asserts; bind 0.0.0.0 in a container; ORDER BY comes from a whitelist
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
