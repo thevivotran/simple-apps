@@ -47,6 +47,11 @@ make skill      # install to ~/.claude/skills and build dist/simple-apps-app.zip
 
 For chat, upload `dist/simple-apps-app.zip` in claude.ai → Settings → Capabilities → Skills.
 
+Chat's sandbox can't reach the tailnet. To let chat in the Claude **desktop** app
+deploy anyway, register the local MCP server `tools/simple_apps_mcp.py` (stdlib only)
+in `claude_desktop_config.json`. It runs on your tailnet machine and holds the token
+itself; see ARCHITECTURE.md §4.10.
+
 ## Delivery
 
 Every push to `main` (and a weekly scheduled run, to pick up base-image security
