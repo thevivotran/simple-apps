@@ -390,9 +390,10 @@ aborted after 2 s (progress handler) and return at most 1000 rows.
 
 ```
 simple_apps/                 the platform (§3.1) — the only code in the image
-tests/                       unittest suites, one per module, plus test_skill.py
+tests/                       unittest suites, one per module, plus test_skill.py, test_mcp.py
+tools/simple_apps_mcp.py     local MCP server: lets Claude desktop chat deploy over the tailnet (§4.10)
 skill/simple-apps-app/       local only (git-ignored): Claude skill for building apps
-  SKILL.md                   workflow: name → build → check → deploy (Code) or hand over a zip (chat)
+  SKILL.md                   workflow: name → build → check → deploy (Code: curl; chat: MCP tools or zip)
   references/                copies of APP_AUTHORING.md and ARCHITECTURE.md
   scripts/check_bundle.py    stdlib pre-flight check + zip builder
 ARCHITECTURE.md              this document
@@ -565,9 +566,35 @@ curl -fsS -X PUT --data-binary @grocery.zip \
 ```
 
 Claude Code does this through the `simple-apps-app` skill (§3.11), which checks
-the bundle with `check_bundle.py` first. In claude.ai chat, which is off the
-tailnet, the skill only produces the checked zip and the admin uploads it on
-the portal (§4.9).
+the bundle with `check_bundle.py` first.
+
+Claude chat's code sandbox runs in the cloud, off the tailnet, so it cannot call
+the platform itself. In the Claude **desktop** app, `tools/simple_apps_mcp.py`
+bridges that gap: a stdlib-only MCP server (stdio) that the desktop app starts on
+the admin's own machine, which *is* on the tailnet. Chat passes the bundle's files
+as tool arguments (`deploy_app`: path → text, plus base64 for binary files); the
+server zips them locally and makes the same `PUT` as above. It also offers
+`list_apps`, `get_app`, `get_app_source` (the export's `site/` only — app data never
+enters the chat), `rollback_app` and `delete_app`. The admin token is read by the
+server from `SIMPLE_APPS_TOKEN` or the output of `SIMPLE_APPS_TOKEN_CMD` (e.g. a
+`sops -d` call) and is never sent to the chat. Registration, in
+`claude_desktop_config.json`:
+
+```json
+"mcpServers": {
+  "simple-apps": {
+    "command": "python3",
+    "args": ["/path/to/simple-apps/tools/simple_apps_mcp.py"],
+    "env": {
+      "SIMPLE_APPS_URL": "https://simple-apps.<tailnet>.ts.net",
+      "SIMPLE_APPS_TOKEN_CMD": "sops -d --extract '[\"stringData\"][\"ADMIN_TOKEN\"]' /path/to/secret.sops.yaml"
+    }
+  }
+}
+```
+
+Without the desktop app on a tailnet machine (claude.ai web or mobile), the skill
+falls back to producing the checked zip, which the admin uploads on the portal (§4.9).
 
 ### 4.11 Failure behaviour
 
